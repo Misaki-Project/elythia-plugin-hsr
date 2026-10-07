@@ -1,7 +1,6 @@
 package hsr
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -97,10 +96,11 @@ func TestVerificationOwnershipPrivacyAndUnlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	public, err = buildProfile(context.Background(), db, nil, "u1")
+	profile, err = h.Call(t, "POST /profile", plugintest.Request{Body: `{"userId":"u1"}`})
 	if err != nil {
 		t.Fatal(err)
 	}
+	public = profile.(map[string]any)
 	if public["uid"] != "800000000" {
 		t.Fatal("UID公開設定が無効")
 	}

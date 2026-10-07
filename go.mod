@@ -3,9 +3,9 @@ module github.com/elythia-network/elythia-plugin-hsr
 go 1.27.1
 
 require (
+	github.com/elythia-network/elythia v0.0.0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/kovidgoyal/imaging v1.8.21
-	github.com/elythia-network/elythia v0.0.0
 )
 
 require (

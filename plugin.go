@@ -270,38 +270,63 @@ func jobs(ctx plugin.Context, j plugin.Jobs) error {
 // **上流が落ちていても古いデータは消さない。** 取れないせいで表示が空になる
 // 方が困る。
 func refreshExpired(c context.Context, ctx plugin.Context, db *sql.DB, client *enkaClient) error {
-	rows, err := db.QueryContext(c, `
-		SELECT a.uid FROM accounts a
-		LEFT JOIN snapshots s ON s.uid = a.uid
-		WHERE (s.uid IS NULL OR s.expires_at <= now())
-		AND GREATEST(a.last_refresh_attempt_at,s.fetched_at) <= now() - interval '1 minute'
-		ORDER BY GREATEST(a.last_refresh_attempt_at,s.fetched_at) NULLS FIRST,a.uid
-		LIMIT 50
-	`)
-	if err != nil {
+	cursor, attempts := "", 0
+	var cursorTime any = "-infinity"
+	var startedAt time.Time
+	if err := db.QueryRowContext(c, `SELECT clock_timestamp()`).Scan(&startedAt); err != nil {
 		return err
 	}
-	var uids []string
-	for rows.Next() {
-		var uid string
-		if err := rows.Scan(&uid); err != nil {
+	for attempts < 50 {
+		rows, err := db.QueryContext(c, `
+		SELECT a.uid,GREATEST(a.last_refresh_attempt_at,s.fetched_at) FROM accounts a
+		LEFT JOIN snapshots s ON s.uid = a.uid
+		WHERE (s.uid IS NULL OR s.expires_at <= now())
+		AND (COALESCE(GREATEST(a.last_refresh_attempt_at,s.fetched_at),'-infinity'::timestamptz),a.uid)>($1::timestamptz,$2)
+		AND (a.last_refresh_attempt_at IS NULL OR a.last_refresh_attempt_at<=$3)
+		ORDER BY COALESCE(GREATEST(a.last_refresh_attempt_at,s.fetched_at),'-infinity'::timestamptz),a.uid
+		LIMIT 100
+	`, cursorTime, cursor, startedAt)
+		if err != nil {
+			return err
+		}
+		var uids []string
+		var times []sql.NullTime
+		for rows.Next() {
+			var uid string
+			var fetched sql.NullTime
+			if err := rows.Scan(&uid, &fetched); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			uids = append(uids, uid)
+			times = append(times, fetched)
+		}
+		if err := rows.Err(); err != nil {
 			_ = rows.Close()
 			return err
 		}
-		uids = append(uids, uid)
-	}
-	if err := rows.Err(); err != nil {
 		_ = rows.Close()
-		return err
-	}
-	_ = rows.Close()
+		if len(uids) == 0 {
+			return nil
+		}
 
-	for _, uid := range uids {
-		_, err := refreshUID(c, ctx.API(), db, client, uid)
-		if err != nil {
-			// 1 件の失敗で全体を止めない。次回の実行で再試行される。
-			ctx.Logger().Warn("取得に失敗しました", "uid", uid, "err", err)
-			continue
+		for i, uid := range uids {
+			cursor = uid
+			cursorTime = "-infinity"
+			if times[i].Valid {
+				cursorTime = times[i].Time
+			}
+			attempted, err := refreshUID(c, ctx.API(), db, client, uid)
+			if attempted {
+				attempts++
+			}
+			if err != nil {
+				// 1 件の失敗で全体を止めない。次回の実行で再試行される。
+				ctx.Logger().Warn("取得に失敗しました", "uid", uid, "err", err)
+			}
+			if attempts == 50 {
+				return nil
+			}
 		}
 	}
 	return nil
