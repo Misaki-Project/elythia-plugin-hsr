@@ -18,7 +18,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</button>
 
 	<div v-if="open" :class="$style.panel">
-		<MkSelect v-if="profiles.length > 1" v-model="accountIndex"><template #label>連携アカウント</template><option v-for="(profile, i) in profiles" :key="profile.accountId" :value="i">{{ profile.nickname }}</option></MkSelect>
+		<MkSelect v-if="profiles.length > 1" v-model="accountIndex" :items="accountItems"><template #label>連携アカウント</template></MkSelect>
 		<a href="/plugin/hsr/rankings">サーバー内の実績ランキング</a>
 		<div :class="$style.records">
 			<span>均衡{{ data.worldLevel }}</span>
@@ -161,6 +161,7 @@ const props = defineProps<{ ctx: SlotContext }>();
 
 const profiles = ref<LinkedProfile[]>([]);
 const accountIndex = ref(0);
+const accountItems = computed(() => profiles.value.map((profile, value) => ({ value, label: profile.nickname })));
 const data = computed(() => profiles.value[accountIndex.value] ?? null);
 const showUid = ref(false);
 const open = ref(false);
@@ -186,6 +187,8 @@ watch(() => props.ctx.user?.id, async (userId) => {
 	profiles.value = [];
 	accountIndex.value = 0;
 	showUid.value = false;
+	selected.value = null;
+	open.value = false;
 	if (userId == null) return;
 	// リモート利用者も引く。相手が同じプラグインを入れた mk-go なら、
 	// バックエンドが取り寄せて返す (初回は間に合わないので出ない)。

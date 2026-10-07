@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/elythia-network/elythia/plugin"
@@ -69,6 +70,7 @@ func TestRewriteAssetHosts_Nested(t *testing.T) {
 
 // fakeAPI records which caller the plugin used.
 type fakeAPI struct {
+	mu    sync.Mutex
 	calls []string
 	resp  json.RawMessage
 	err   error
@@ -85,8 +87,32 @@ type fakeCaller struct {
 }
 
 func (c *fakeCaller) Call(_ context.Context, endpoint string, _ any) (json.RawMessage, error) {
+	c.api.mu.Lock()
+	defer c.api.mu.Unlock()
 	c.api.calls = append(c.api.calls, c.who+" "+endpoint)
 	return c.api.resp, c.api.err
+}
+
+func TestPeerRejectsLegacyUnverifiedProfile(t *testing.T) {
+	h, routes := peerHarness(t, &fakeAPI{resp: json.RawMessage(`{"id":"u-remote","username":"alice","host":"other.example"}`)})
+	if _, err := routes.Call(t, "POST /profile", plugintest.Request{Body: `{"userId":"u-remote"}`}); err != nil {
+		t.Fatal(err)
+	}
+	sends := h.PeerSends()
+	if len(sends) != 1 {
+		t.Fatal("問い合わせがない")
+	}
+	body, _ := json.Marshal(map[string]any{"linked": true, "uid": "800000000", "nickname": "旧未確認プロフィール"})
+	if err := h.DeliverPeerReply("other.example", sends[0].ID, peerResponse{Linked: true, Profile: body}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := routes.Call(t, "POST /profile", plugintest.Request{Body: `{"userId":"u-remote"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.(map[string]any)["linked"] != false {
+		t.Fatal("旧未確認プロフィールを公開")
+	}
 }
 
 // fakeCtx is the minimum plugin.Context remoteAcct needs.

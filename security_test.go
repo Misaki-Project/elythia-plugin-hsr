@@ -216,3 +216,31 @@ func TestRefreshDueTTLAndAttempt(t *testing.T) {
 		t.Fatal("TTL・試行間隔判定が不正")
 	}
 }
+
+func TestConcurrentUIDVerificationHasOneOwner(t *testing.T) {
+	db, h, count, signature := securityHarness(t, &fakeAPI{resp: json.RawMessage(`{"host":null,"policies":{}}`)})
+	one := challengeRequest(t, h, "u1", "800000000")
+	two := challengeRequest(t, h, "u2", "800000000")
+	*signature = one.Code + " " + two.Code
+	start := make(chan struct{})
+	results := make(chan bool, 2)
+	for _, item := range []struct{ user, code string }{{"u1", one.Code}, {"u2", two.Code}} {
+		go func(user, code string) {
+			<-start
+			res, err := verifyRequest(t, h, user, code)
+			results <- err == nil && res.(map[string]any)["verified"] == true
+		}(item.user, item.code)
+	}
+	close(start)
+	first, second := <-results, <-results
+	if first == second {
+		t.Fatalf("認証成功は1人だけ: %v %v", first, second)
+	}
+	var owners int
+	if err := db.QueryRow(`SELECT count(*) FROM accounts WHERE uid='800000000'`).Scan(&owners); err != nil || owners != 1 {
+		t.Fatalf("所有者=%d err=%v", owners, err)
+	}
+	if count.Load() != 1 {
+		t.Fatalf("TTL中に重複取得: %d", count.Load())
+	}
+}
