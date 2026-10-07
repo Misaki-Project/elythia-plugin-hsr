@@ -32,8 +32,9 @@ type peerRequest struct {
 
 // peerResponse is what the other instance answers.
 type peerResponse struct {
-	Linked  bool            `json:"linked"`
-	Profile json.RawMessage `json:"profile,omitempty"`
+	PrivacyVersion int             `json:"privacyVersion"`
+	Linked         bool            `json:"linked"`
+	Profile        json.RawMessage `json:"profile,omitempty"`
 }
 
 // remoteTTL / remoteNegativeTTL は peercache に渡す寿命。
@@ -96,7 +97,7 @@ func registerPeer(ctx plugin.Context, peer plugin.Peer, db *sql.DB, client *enka
 		if err != nil {
 			return nil, err
 		}
-		return peerResponse{Linked: true, Profile: body}, nil
+		return peerResponse{PrivacyVersion: 1, Linked: true, Profile: body}, nil
 	})
 
 	// 問い合わせの答えが返ってきたとき。
@@ -104,6 +105,10 @@ func registerPeer(ctx plugin.Context, peer plugin.Peer, db *sql.DB, client *enka
 		var res peerResponse
 		if err := json.Unmarshal(reply, &res); err != nil {
 			return fmt.Errorf("応答を読めません: %w", err)
+		}
+		// 旧版は所有確認も公開設定も無い。旧形式のprofileを公開キャッシュへ入れない。
+		if res.PrivacyVersion != 1 {
+			return cache.Store(c, id, nil, false)
 		}
 		return cache.Store(c, id, res.Profile, res.Linked && len(res.Profile) > 0)
 	})
@@ -133,15 +138,17 @@ func localUserIDByUsername(c context.Context, ctx plugin.Context, username strin
 		return "", err
 	}
 	var user struct {
-		ID   string  `json:"id"`
-		Host *string `json:"host"`
+		ID          string  `json:"id"`
+		Host        *string `json:"host"`
+		IsSuspended bool    `json:"isSuspended"`
+		IsDeleted   bool    `json:"isDeleted"`
 	}
 	if err := json.Unmarshal(raw, &user); err != nil {
 		return "", err
 	}
 	// **自分のところの利用者だけ答える。** 手元にキャッシュしている他所の
 	// 利用者を又貸しすると、情報の出どころが分からなくなる。
-	if user.Host != nil && *user.Host != "" {
+	if (user.Host != nil && *user.Host != "") || user.IsSuspended || user.IsDeleted {
 		return "", nil
 	}
 	return user.ID, nil

@@ -26,9 +26,9 @@ import (
 // Plugin is the entry point referenced by the generated registration code.
 var Plugin = plugin.Definition{
 	Name:       "hsr",
-	Version:    "0.1.0",
+	Version:    "0.2.0",
 	APIVersion: plugin.APIVersion,
-	Migrations: append(migrations, peerCacheMigration...),
+	Migrations: append(append(migrations, peerCacheMigration...), securityMigration),
 	Routes:     routes,
 	Jobs:       jobs,
 	// 同じプラグインを入れた mk-go 同士で、リモート利用者の戦績を取り寄せる。
@@ -140,69 +140,59 @@ func routes(ctx plugin.Context, r plugin.Router) error {
 	db := ctx.Storage().DB()
 	client := newEnkaClient(set)
 
-	r.POST("/me", func(req plugin.Request) (any, error) {
-		me := req.UserID()
-		if me == "" {
-			return nil, plugin.Errorf(http.StatusUnauthorized, "ログインが必要です")
+	registerSecurityRoutes(ctx, r, db, client)
+	r.POST("/profiles", func(req plugin.Request) (any, error) {
+		var body struct {
+			UserID string `json:"userId"`
 		}
-		var uid string
-		var updated *time.Time
-		err := db.QueryRowContext(req.Context(),
-			`SELECT uid, updated_at FROM accounts WHERE user_id = $1`, me).Scan(&uid, &updated)
-		if errors.Is(err, sql.ErrNoRows) {
-			return map[string]any{"uid": nil}, nil
+		if req.Bind(&body) != nil || body.UserID == "" {
+			return nil, plugin.Errorf(400, "userIdが必要です")
 		}
+		visible, err := visibleUser(req.Context(), ctx.API(), req.UserID(), body.UserID)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"uid": uid, "updatedAt": updated}, nil
-	})
-
-	r.POST("/me/set", func(req plugin.Request) (any, error) {
-		me := req.UserID()
-		if me == "" {
-			return nil, plugin.Errorf(http.StatusUnauthorized, "ログインが必要です")
+		if !visible {
+			return map[string]any{"profiles": []map[string]any{}}, nil
 		}
-		var body struct {
-			UID string `json:"uid"`
+		rows, err := db.QueryContext(req.Context(), `SELECT uid FROM accounts WHERE user_id=$1 ORDER BY updated_at,uid`, body.UserID)
+		if err != nil {
+			return nil, err
 		}
-		if err := req.Bind(&body); err != nil {
-			return nil, plugin.Errorf(http.StatusBadRequest, "リクエストを読めません")
-		}
-
-		// 空文字は登録解除として扱う。UI から消したときに消せないと不便。
-		if body.UID == "" {
-			if _, err := db.ExecContext(req.Context(), `DELETE FROM accounts WHERE user_id = $1`, me); err != nil {
+		uids := []string{}
+		for rows.Next() {
+			var uid string
+			if err := rows.Scan(&uid); err != nil {
+				_ = rows.Close()
 				return nil, err
 			}
-			return map[string]any{"uid": nil}, nil
+			uids = append(uids, uid)
 		}
-		if !uidPattern.MatchString(body.UID) {
-			return nil, plugin.Errorf(http.StatusBadRequest, "UID の形式が正しくありません")
-		}
-
-		// **登録時に 1 度だけ取得して存在を確かめる。** 存在しない UID を黙って
-		// 保存すると、プロフィールに何も出ない理由が利用者に分からない。
-		snap, err := client.fetch(req.Context(), body.UID)
+		err = rows.Err()
+		_ = rows.Close()
 		if err != nil {
-			var ue *upstreamError
-			if errors.As(err, &ue) && ue.userFacing != "" {
-				return nil, plugin.Errorf(ue.status, "%s", ue.userFacing)
+			return nil, err
+		}
+		profiles := []map[string]any{}
+		for _, uid := range uids {
+			p, err := buildProfile(req.Context(), db, client, body.UserID, uid)
+			if err != nil {
+				return nil, err
 			}
-			// 上流の一時的な不調で登録を拒むと、直るまで設定できない。
-			// 保存だけして、表示は次の更新に任せる。
-			ctx.Logger().Warn("登録時の取得に失敗しました (保存は行います)", "err", err)
-		} else if err := saveSnapshot(req.Context(), db, snap); err != nil {
-			return nil, err
+			if p != nil {
+				profiles = append(profiles, p)
+			}
 		}
-
-		if _, err := db.ExecContext(req.Context(), `
-			INSERT INTO accounts (user_id, uid, updated_at) VALUES ($1, $2, now())
-			ON CONFLICT (user_id) DO UPDATE SET uid = EXCLUDED.uid, updated_at = now()
-		`, me, body.UID); err != nil {
-			return nil, err
+		if len(uids) == 0 {
+			p, err := remoteLookup(req.Context(), ctx, db, req.UserID(), body.UserID)
+			if err != nil {
+				return nil, err
+			}
+			if value, ok := p.(map[string]any); ok && value["linked"] == true {
+				profiles = append(profiles, value)
+			}
 		}
-		return map[string]any{"uid": body.UID}, nil
+		return map[string]any{"profiles": profiles}, nil
 	})
 
 	r.POST("/profile", func(req plugin.Request) (any, error) {
@@ -211,6 +201,13 @@ func routes(ctx plugin.Context, r plugin.Router) error {
 		}
 		if err := req.Bind(&body); err != nil || body.UserID == "" {
 			return nil, plugin.Errorf(http.StatusBadRequest, "userId が必要です")
+		}
+		visible, err := visibleUser(req.Context(), ctx.API(), req.UserID(), body.UserID)
+		if err != nil {
+			return nil, err
+		}
+		if !visible {
+			return map[string]any{"linked": false}, nil
 		}
 
 		// まず自分のところの利用者として引く。
@@ -264,7 +261,7 @@ func jobs(ctx plugin.Context, j plugin.Jobs) error {
 	j.Handle("refresh", func(c context.Context, _ json.RawMessage) error {
 		return refreshExpired(c, ctx, db, client)
 	})
-	j.Schedule("*/10 * * * *", "refresh", nil)
+	j.Schedule("* * * * *", "refresh", nil)
 	return nil
 }
 
@@ -274,9 +271,11 @@ func jobs(ctx plugin.Context, j plugin.Jobs) error {
 // 方が困る。
 func refreshExpired(c context.Context, ctx plugin.Context, db *sql.DB, client *enkaClient) error {
 	rows, err := db.QueryContext(c, `
-		SELECT DISTINCT a.uid FROM accounts a
+		SELECT a.uid FROM accounts a
 		LEFT JOIN snapshots s ON s.uid = a.uid
-		WHERE s.uid IS NULL OR s.expires_at <= now()
+		WHERE (s.uid IS NULL OR s.expires_at <= now())
+		AND GREATEST(a.last_refresh_attempt_at,s.fetched_at) <= now() - interval '1 minute'
+		ORDER BY GREATEST(a.last_refresh_attempt_at,s.fetched_at) NULLS FIRST,a.uid
 		LIMIT 50
 	`)
 	if err != nil {
@@ -298,20 +297,21 @@ func refreshExpired(c context.Context, ctx plugin.Context, db *sql.DB, client *e
 	_ = rows.Close()
 
 	for _, uid := range uids {
-		snap, err := client.fetch(c, uid)
+		_, err := refreshUID(c, ctx.API(), db, client, uid)
 		if err != nil {
 			// 1 件の失敗で全体を止めない。次回の実行で再試行される。
 			ctx.Logger().Warn("取得に失敗しました", "uid", uid, "err", err)
 			continue
 		}
-		if err := saveSnapshot(c, db, snap); err != nil {
-			ctx.Logger().Warn("保存に失敗しました", "uid", uid, "err", err)
-		}
 	}
 	return nil
 }
 
-func saveSnapshot(c context.Context, db *sql.DB, s *snapshot) error {
+type sqlExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func saveSnapshot(c context.Context, db sqlExecutor, s *snapshot) error {
 	characters, err := json.Marshal(s.characters)
 	if err != nil {
 		return err

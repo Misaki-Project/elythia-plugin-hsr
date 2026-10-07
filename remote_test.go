@@ -197,17 +197,15 @@ func peerHarness(t *testing.T, api plugin.API) (*plugintest.Harness, plugintest.
 		WithConfig(testConfig(t, srv.URL))
 	// **Peer の登録は Definition.Peer 経由 (mk-go #2819 / #2820)。**
 	h.Peer(Plugin)
-	return h, h.Routes(Plugin)
+	routes := h.Routes(Plugin)
+	seedVerifiedProfile(t, h.Context().Storage().DB(), srv.URL)
+	return h, routes
 }
 
 // 相手から聞かれたら、自分のところの利用者の分だけ答える。
 func TestPeer_AnswersForLocalUser(t *testing.T) {
 	api := &fakeAPI{resp: json.RawMessage(`{"id":"u1","host":null}`)}
-	h, routes := peerHarness(t, api)
-
-	if _, err := routes.Call(t, "POST /me/set", plugintest.Request{UserID: "u1", Body: `{"uid":"800000000"}`}); err != nil {
-		t.Fatal(err)
-	}
+	h, _ := peerHarness(t, api)
 
 	res, err := h.DeliverPeer("other.example", peerRequest{Username: "alice"})
 	if err != nil {
@@ -250,7 +248,7 @@ func TestPeer_RejectsBadRequest(t *testing.T) {
 
 // 問い合わせは非同期。初回は「まだ無い」を返しつつ、裏で送ること。
 func TestRemoteLookup_AsksThenServesCache(t *testing.T) {
-	api := &fakeAPI{resp: json.RawMessage(`{"username":"alice","host":"other.example"}`)}
+	api := &fakeAPI{resp: json.RawMessage(`{"id":"u-remote","username":"alice","host":"other.example"}`)}
 	h, routes := peerHarness(t, api)
 
 	res, err := routes.Call(t, "POST /profile", plugintest.Request{UserID: "viewer1", Body: `{"userId":"u-remote"}`})
@@ -272,7 +270,7 @@ func TestRemoteLookup_AsksThenServesCache(t *testing.T) {
 		"profileIcon": "https://other.example" + assetRoutePrefix + "A.png",
 	}
 	body, _ := json.Marshal(profile)
-	if err := h.DeliverPeerReply("other.example", sends[0].ID, peerResponse{Linked: true, Profile: body}); err != nil {
+	if err := h.DeliverPeerReply("other.example", sends[0].ID, peerResponse{PrivacyVersion: 1, Linked: true, Profile: body}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -292,7 +290,7 @@ func TestRemoteLookup_AsksThenServesCache(t *testing.T) {
 
 // 相手が同じプラグインを持っていなければ黙って諦める (Misskey TS なら当然)。
 func TestRemoteLookup_SkipsUnknownPeer(t *testing.T) {
-	api := &fakeAPI{resp: json.RawMessage(`{"username":"alice","host":"stranger.example"}`)}
+	api := &fakeAPI{resp: json.RawMessage(`{"id":"u-remote","username":"alice","host":"stranger.example"}`)}
 	h, routes := peerHarness(t, api)
 
 	res, err := routes.Call(t, "POST /profile", plugintest.Request{UserID: "viewer1", Body: `{"userId":"u-remote"}`})
@@ -309,7 +307,7 @@ func TestRemoteLookup_SkipsUnknownPeer(t *testing.T) {
 
 // どの問い合わせの答えか分からない応答は捨てる。取り込むと別人の戦績を出しかねない。
 func TestPeer_DropsUncorrelatedReply(t *testing.T) {
-	h, routes := peerHarness(t, &fakeAPI{resp: json.RawMessage(`{"username":"alice","host":"other.example"}`)})
+	h, routes := peerHarness(t, &fakeAPI{resp: json.RawMessage(`{"id":"u-remote","username":"alice","host":"other.example"}`)})
 
 	body, _ := json.Marshal(map[string]any{"linked": true, "nickname": "誰か"})
 	if err := h.DeliverPeerReply("other.example", "unknown-id", peerResponse{Linked: true, Profile: body}); err != nil {
