@@ -105,7 +105,7 @@ func linkLimit(c context.Context, api plugin.API, userID string) (int, error) {
 		return 1, nil
 	}
 	var limit float64
-	if json.Unmarshal(value, &limit) != nil || limit < 0 || limit >= float64(math.MaxInt) || math.Trunc(limit) != limit {
+	if json.Unmarshal(value, &limit) != nil || limit < 0 || limit > 100 || math.Trunc(limit) != limit {
 		return 0, plugin.Errorf(503, "UID連携上限の設定が不正です")
 	}
 	return int(limit), nil

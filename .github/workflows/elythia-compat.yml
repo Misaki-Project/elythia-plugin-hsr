@@ -36,6 +36,13 @@ jobs:
           set -euo pipefail
           files=$(gofmt -s -l .)
           if [ -n "$files" ]; then printf '%s\n' "$files"; exit 1; fi
+      - name: Prepare release SDK dependency ledger
+        working-directory: plugins/hsr
+        env:
+          GOWORK: 'off'
+        run: |
+          go mod tidy
+          git diff -- go.mod go.sum
       - name: Vet, database race regression and build
         working-directory: plugins/hsr
         env:
