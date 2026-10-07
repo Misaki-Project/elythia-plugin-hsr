@@ -21,7 +21,12 @@ export function api<T>(path: string, params: Record<string, unknown> = {}): Prom
 	return call<T>(`plugin/hsr/${path}`, params);
 }
 
-export type MeResponse = { uid: string | null };
+export type LinkChallenge = { uid: string; code: string; expiresAt: string; nextCheckAt: string; attempts: number };
+export type MeResponse = { uids: string[]; limit: number; pending: LinkChallenge | null; unverifiedUid: string };
+export type Preferences = { publishUid: boolean; publishSignature: boolean; rankingEnabled: boolean };
+export type VerifyResponse = { verified: boolean; nextCheckAt?: string; expiresAt?: string };
+export type RankingEntry = { rank: number; userId: string; accountId: string; uid?: string; nickname: string; value: number; fetchedAt: string };
+export type RankingResponse = { entries: RankingEntry[]; hasMore: boolean; offset: number; limit: number };
 
 /** ラベル付きの数値。percent が true なら "%" を付けて表示する。 */
 export type Stat = {
@@ -97,9 +102,10 @@ export type Character = {
 
 export type LinkedProfile = {
 	linked: true;
-	uid: string;
+	accountId: string;
+	uid?: string;
 	nickname: string;
-	signature: string;
+	signature?: string;
 	/** 開拓レベル。 */
 	level: number;
 	/** 均衡レベル。 */

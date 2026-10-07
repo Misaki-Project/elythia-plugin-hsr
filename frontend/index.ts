@@ -7,9 +7,11 @@ import { definePlugin } from '@/plugin-api.js';
 import { initApi } from './api.js';
 import ProfileCard from './ProfileCard.vue';
 import SettingsSection from './SettingsSection.vue';
+import Rankings from './Rankings.vue';
 
 export default definePlugin({
 	name: 'hsr',
+	pages: [{ path: '/rankings', component: Rankings, navTitle: 'スターレイル実績ランキング', navIcon: 'ti ti-trophy', explore: true }],
 
 	setup(host) {
 		initApi(host.api);

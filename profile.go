@@ -13,7 +13,11 @@ import (
 //
 // 未登録なら (nil, nil)。**エラーと区別する** — 「登録していない」は普通の
 // 状態で、表示側はそれを見て何も描かない。
-func buildProfile(c context.Context, db *sql.DB, client *enkaClient, userID string) (map[string]any, error) {
+func buildProfile(c context.Context, db *sql.DB, client *enkaClient, userID string, selectedUID ...string) (map[string]any, error) {
+	filterUID := ""
+	if len(selectedUID) > 0 {
+		filterUID = selectedUID[0]
+	}
 	var (
 		uid, nickname, signature, region, platform string
 		level, worldLevel, friendCount, headIcon   int
@@ -22,18 +26,23 @@ func buildProfile(c context.Context, db *sql.DB, client *enkaClient, userID stri
 		rogueScore, memoryLevel                    int
 		charactersRaw                              []byte
 		fetchedAt                                  time.Time
+		publicID                                   string
+		publishUID, publishSignature               bool
 	)
 	err := db.QueryRowContext(c, `
 		SELECT a.uid, s.nickname, s.signature, s.level, s.world_level, s.region,
 		       s.platform, s.friend_count, s.head_icon, s.achievements, s.book_count,
 		       s.avatar_count, s.equipment_count, s.relic_count, s.music_count,
-		       s.rogue_score, s.memory_level, s.characters, s.fetched_at
+		       s.rogue_score, s.memory_level, s.characters, s.fetched_at,
+		       a.public_id, COALESCE(p.publish_uid,false), COALESCE(p.publish_signature,true)
 		FROM accounts a JOIN snapshots s ON s.uid = a.uid
-		WHERE a.user_id = $1
-	`, userID).Scan(&uid, &nickname, &signature, &level, &worldLevel, &region,
+		LEFT JOIN user_preferences p ON p.user_id=a.user_id
+		WHERE a.user_id = $1 AND ($2='' OR a.uid=$2)
+		ORDER BY a.updated_at,a.uid LIMIT 1
+	`, userID, filterUID).Scan(&uid, &nickname, &signature, &level, &worldLevel, &region,
 		&platform, &friendCount, &headIcon, &achievements, &bookCount,
 		&avatarCount, &equipmentCount, &relicCount, &musicCount,
-		&rogueScore, &memoryLevel, &charactersRaw, &fetchedAt)
+		&rogueScore, &memoryLevel, &charactersRaw, &fetchedAt, &publicID, &publishUID, &publishSignature)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -56,7 +65,8 @@ func buildProfile(c context.Context, db *sql.DB, client *enkaClient, userID stri
 		}
 	}
 
-	return map[string]any{
+	profile := map[string]any{
+		"accountId":      publicID,
 		"linked":         true,
 		"uid":            uid,
 		"nickname":       nickname,
@@ -77,5 +87,12 @@ func buildProfile(c context.Context, db *sql.DB, client *enkaClient, userID stri
 		"profileIcon":    icon,
 		"characters":     characters,
 		"fetchedAt":      fetchedAt,
-	}, nil
+	}
+	if !publishUID {
+		delete(profile, "uid")
+	}
+	if !publishSignature {
+		delete(profile, "signature")
+	}
+	return profile, nil
 }

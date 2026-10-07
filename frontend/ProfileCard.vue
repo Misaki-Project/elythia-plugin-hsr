@@ -18,6 +18,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 	</button>
 
 	<div v-if="open" :class="$style.panel">
+		<MkSelect v-if="profiles.length > 1" v-model="accountIndex" :items="accountItems"><template #label>連携アカウント</template></MkSelect>
+		<a href="/plugin/hsr/rankings">サーバー内の実績ランキング</a>
 		<div :class="$style.records">
 			<span>均衡{{ data.worldLevel }}</span>
 			<span v-if="data.memoryLevel > 0">忘却の庭 {{ data.memoryLevel }}層</span>
@@ -39,7 +41,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 		-->
 		<div v-if="data.characters.length > 0" :class="$style.roster">
 			<button
-				v-for="(c, i) in data.characters"
+				v-for="(c, i) in data.characters.slice(0, 12)"
 				:key="c.avatarId"
 				type="button"
 				class="_button"
@@ -143,20 +145,25 @@ SPDX-License-Identifier: AGPL-3.0-only
 			</div>
 		</div>
 
-		<div :class="$style.footer">UID {{ data.uid }}</div>
+		<MkSwitch v-if="data.uid" v-model="showUid"><template #label>公開UIDを表示する</template></MkSwitch>
+		<div v-if="showUid && data.uid" :class="$style.footer">UID {{ data.uid }}</div>
 	</div>
 </div>
 </template>
 
 <script lang="ts" setup>
-import { ref, computed, onMounted } from 'vue';
-import { type SlotContext } from '@/plugin-api.js';
+import { ref, computed, watch } from 'vue';
+import { MkSelect, MkSwitch, type SlotContext } from '@/plugin-api.js';
 import { api, slotLabel, traceLabel, elementLabel, elementColor, pathLabel, fmtStat } from './api.js';
-import type { ProfileResponse, LinkedProfile } from './api.js';
+import type { LinkedProfile } from './api.js';
 
 const props = defineProps<{ ctx: SlotContext }>();
 
-const data = ref<LinkedProfile | null>(null);
+const profiles = ref<LinkedProfile[]>([]);
+const accountIndex = ref(0);
+const accountItems = computed(() => profiles.value.map((profile, value) => ({ value, label: profile.nickname })));
+const data = computed(() => profiles.value[accountIndex.value] ?? null);
+const showUid = ref(false);
 const open = ref(false);
 const selected = ref<number | null>(null);
 
@@ -173,21 +180,28 @@ function toggle(): void {
 	}
 }
 
-onMounted(async () => {
-	const user = props.ctx.user;
-	if (user == null) return;
+let requestVersion = 0;
+watch(accountIndex, () => { selected.value = 0; showUid.value = false; });
+watch(() => props.ctx.user?.id, async (userId) => {
+	const version = ++requestVersion;
+	profiles.value = [];
+	accountIndex.value = 0;
+	showUid.value = false;
+	selected.value = null;
+	open.value = false;
+	if (userId == null) return;
 	// リモート利用者も引く。相手が同じプラグインを入れた mk-go なら、
 	// バックエンドが取り寄せて返す (初回は間に合わないので出ない)。
 
 	try {
-		const res = await api<ProfileResponse>('profile', { userId: user.id });
-		if (res.linked) data.value = res;
+		const res = await api<{ profiles: LinkedProfile[] }>('profiles', { userId });
+		if (version === requestVersion) profiles.value = res.profiles;
 	} catch (err) {
 		// 表示できないだけで済ませる。データが取れないせいでプロフィール全体が
 		// 壊れてはいけない。
 		console.error('[plugin:hsr] プロフィールの取得に失敗しました', err);
 	}
-});
+}, { immediate: true });
 </script>
 
 <style lang="scss" module>

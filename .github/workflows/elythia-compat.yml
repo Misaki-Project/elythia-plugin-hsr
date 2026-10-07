@@ -1,0 +1,56 @@
+name: Elythia 2.0 HSR security regression
+on:
+  pull_request:
+  push:
+    branches: [feat/misaki-verification-ranking-20261007]
+permissions:
+  contents: read
+jobs:
+  plugin-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: mk
+          POSTGRES_PASSWORD: mk
+          POSTGRES_DB: misskey_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U mk -d misskey_test"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Elythia-Network/elythia
+          ref: 3a01a6d62948725e1bc888012be9aeec6f690b86
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: plugins/hsr
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - name: Check formatting
+        working-directory: plugins/hsr
+        run: |
+          set -euo pipefail
+          files=$(gofmt -s -l .)
+          if [ -n "$files" ]; then printf '%s\n' "$files"; exit 1; fi
+      - name: Prepare release SDK dependency ledger
+        working-directory: plugins/hsr
+        env:
+          GOWORK: 'off'
+        run: |
+          go mod tidy
+          git diff -- go.mod go.sum
+      - name: Vet, database race regression and build
+        working-directory: plugins/hsr
+        env:
+          GOWORK: 'off'
+          GOFLAGS: '-mod=readonly'
+        run: |
+          set -euo pipefail
+          go vet ./...
+          go test ./... -v -race -count=1 -shuffle=3 | tee /tmp/hsr-tests.log
+          if grep -q -- '--- SKIP:' /tmp/hsr-tests.log; then exit 1; fi
+          go build ./...
