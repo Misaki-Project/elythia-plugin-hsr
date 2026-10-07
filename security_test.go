@@ -1,6 +1,7 @@
 package hsr
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -242,5 +243,31 @@ func TestConcurrentUIDVerificationHasOneOwner(t *testing.T) {
 	}
 	if count.Load() != 1 {
 		t.Fatalf("TTL中に重複取得: %d", count.Load())
+	}
+}
+
+func TestSnapshotTTLStartsAtSaveNotTransactionStart(t *testing.T) {
+	db, _, _, _ := securityHarness(t, &fakeAPI{resp: json.RawMessage(`{"host":null,"policies":{}}`)})
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`SELECT pg_sleep(0.05)`); err != nil {
+		t.Fatal(err)
+	}
+	var before time.Time
+	if err := tx.QueryRow(`SELECT clock_timestamp()`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveSnapshot(context.Background(), tx, &snapshot{uid: "800000000", nickname: "test", ttl: 60}); err != nil {
+		t.Fatal(err)
+	}
+	var fetched, expires time.Time
+	if err := tx.QueryRow(`SELECT fetched_at,expires_at FROM snapshots WHERE uid='800000000'`).Scan(&fetched, &expires); err != nil {
+		t.Fatal(err)
+	}
+	if fetched.Before(before) || expires.Before(before.Add(60*time.Second)) {
+		t.Fatal("トランザクション開始時刻でTTLを短縮している")
 	}
 }

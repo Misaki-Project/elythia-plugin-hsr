@@ -351,7 +351,7 @@ func saveSnapshot(c context.Context, db sqlExecutor, s *snapshot) error {
 			equipment_count, relic_count, music_count, rogue_score, memory_level,
 			characters, fetched_at, expires_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-			$16, $17, $18, now(), now() + make_interval(secs => $19))
+			$16, $17, $18, clock_timestamp(), clock_timestamp() + make_interval(secs => $19))
 		ON CONFLICT (uid) DO UPDATE SET
 			nickname = EXCLUDED.nickname, signature = EXCLUDED.signature,
 			level = EXCLUDED.level, world_level = EXCLUDED.world_level,
